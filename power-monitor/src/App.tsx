@@ -31,13 +31,20 @@ interface CPUCore {
   temperature: number;
 }
 
+interface GPU {
+  id: number;
+  power: number;
+  frequency: number;
+  usage: number;
+}
+
 interface SystemMetrics {
   timestamp: number;
   cpu_cores: CPUCore[];
   total_cpu_power: number;
-  gpu_power: number;
-  gpu_frequency: number;
-  gpu_usage: number;
+  total_gpu_power: number;
+  total_gpu_usage: number;
+  gpus: GPU[];
   memory_total: number;
   memory_used: number;
   carbon_intensity: number;
@@ -127,7 +134,7 @@ function App() {
       },
       {
         label: 'GPU Power',
-        data: history.map(m => m.gpu_power),
+        data: history.map(m => m.total_gpu_power),
         borderColor: 'rgb(75, 192, 192)',
         tension: 0.1
       }
@@ -165,11 +172,11 @@ function App() {
             </div>
             <div className="power-stat">
               <span>GPU Power:</span>
-              <span>{metrics ? formatPower(metrics.gpu_power) : '0 W'}</span>
+              <span>{metrics ? formatPower(metrics.total_gpu_power) : '0 W'}</span>
             </div>
             <div className="power-stat total">
               <span>Total Power:</span>
-              <span>{metrics ? formatPower(metrics.total_cpu_power + metrics.gpu_power) : '0 W'}</span>
+              <span>{metrics ? formatPower(metrics.total_cpu_power + metrics.total_gpu_power) : '0 W'}</span>
             </div>
           </div>
           <div className="chart-container">
@@ -226,27 +233,57 @@ function App() {
         {/* GPU Section */}
         <div className="metric-card">
           <h2>GPU Metrics</h2>
-          <div className="gpu-stats">
+          {/* Overall GPU Stats */}
+          <div className="gpu-overall-stats">
+            <h3>Overall GPU</h3>
             <div className="gpu-stat">
-              <span>Usage:</span>
-              <span>{metrics?.gpu_usage.toFixed(1)}%</span>
+              <span>Total Power:</span>
+              <span>{metrics ? formatPower(metrics.total_gpu_power) : '0 W'}</span>
             </div>
             <div className="gpu-stat">
-              <span>Frequency:</span>
-              <span>{metrics?.gpu_frequency.toFixed(0)} MHz</span>
+              <span>Average Usage:</span>
+              <span>{metrics?.total_gpu_usage.toFixed(1)}%</span>
             </div>
-            <div className="gpu-stat">
-              <span>Power:</span>
-              <span>{metrics ? formatPower(metrics.gpu_power) : '0 W'}</span>
+            <div className="gpu-usage-bar">
+              <div 
+                className="gpu-usage"
+                style={{
+                  width: `${metrics?.total_gpu_usage || 0}%`
+                }}
+              />
             </div>
           </div>
-          <div className="gpu-usage-bar">
-            <div 
-              className="gpu-usage"
-              style={{
-                width: `${metrics?.gpu_usage || 0}%`
-              }}
-            />
+
+          {/* Individual GPUs */}
+          <div className="gpus-grid">
+            {metrics?.gpus.map(gpu => (
+              <div key={gpu.id} className="gpu-card">
+                <div className="gpu-header">GPU {gpu.id}</div>
+                <div className="gpu-stats">
+                  <div className="gpu-stat">
+                    <span>Usage:</span>
+                    <span>{gpu.usage.toFixed(1)}%</span>
+                  </div>
+                  <div className="gpu-stat">
+                    <span>Frequency:</span>
+                    <span>{gpu.frequency.toFixed(0)} MHz</span>
+                  </div>
+                  <div className="gpu-stat">
+                    <span>Power:</span>
+                    <span>{formatPower(gpu.power)}</span>
+                  </div>
+                </div>
+                <div className="gpu-usage-bar">
+                  <div 
+                    className="gpu-usage"
+                    style={{
+                      width: `${gpu.usage}%`,
+                      backgroundColor: `hsl(${(gpu.id * 40 + 200) % 360}, 70%, 50%)`
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>

@@ -14,13 +14,23 @@ struct CPUCore {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+struct GPU {
+    id: u32,
+    power: f64,
+    frequency: f64,
+    usage: f64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct SystemMetrics {
     timestamp: u64,
     cpu_cores: Vec<CPUCore>,
     total_cpu_power: f64,
-    gpu_power: f64,
-    gpu_frequency: f64,
-    gpu_usage: f64,
+    // Overall GPU stats
+    total_gpu_power: f64,
+    total_gpu_usage: f64,
+    // Individual GPU stats
+    gpus: Vec<GPU>,
     memory_total: u64,
     memory_used: u64,
     carbon_intensity: f64,
@@ -54,11 +64,13 @@ fn parse_cpu_core(text: &str, core_id: u32) -> Option<CPUCore> {
     })
 }
 
-fn parse_gpu_metrics(text: &str) -> (f64, f64, f64) {
+fn parse_gpu_metrics(text: &str) -> (Vec<GPU>, f64, f64) {
     let mut power = 0.0;
-    let mut frequency = 0.0;
-    let mut usage = 0.0;
+    let mut current_frequency = 0.0;
+    let mut max_frequency: f64 = 0.0;
+    let mut active_residency = 0.0;
 
+    // Parse the GPU metrics section
     for line in text.lines() {
         if line.starts_with("GPU Power:") {
             if let Some(power_str) = line.split(':').nth(1) {
@@ -69,21 +81,54 @@ fn parse_gpu_metrics(text: &str) -> (f64, f64, f64) {
             }
         } else if line.starts_with("GPU HW active frequency:") {
             if let Some(freq_str) = line.split(':').nth(1) {
-                frequency = freq_str.trim().split_whitespace().next()
+                current_frequency = freq_str.trim().split_whitespace().next()
                     .and_then(|s| s.parse::<f64>().ok())
                     .unwrap_or(0.0);
             }
-        } else if line.contains("GPU idle residency:") {
-            if let Some(idle_str) = line.split(':').nth(1) {
-                let idle = idle_str.trim().split('%').next()
-                    .and_then(|s| s.trim().parse::<f64>().ok())
-                    .unwrap_or(0.0);
-                usage = 100.0 - idle;
+        } else if line.contains("GPU HW active residency:") {
+            // Find the maximum frequency in the residency line
+            if let Some(residency_str) = line.split(':').nth(1) {
+                for part in residency_str.split(')') {
+                    if let Some(freq_str) = part.split("MHz:").next() {
+                        if let Some(freq) = freq_str.trim().split_whitespace().next() {
+                            if let Ok(freq_val) = freq.parse::<f64>() {
+                                max_frequency = max_frequency.max(freq_val);
+                            }
+                        }
+                    }
+                }
+                // Get the active residency percentage
+                active_residency = 100.0 - (line.contains("idle residency:")
+                    .then(|| {
+                        line.split("idle residency:").nth(1)
+                            .and_then(|s| s.trim().split('%').next())
+                            .and_then(|s| s.trim().parse::<f64>().ok())
+                            .unwrap_or(0.0)
+                    })
+                    .unwrap_or(0.0));
             }
         }
     }
 
-    (power, frequency, usage)
+    // Calculate overall GPU usage as a combination of frequency and activity
+    let frequency_utilization = if max_frequency > 0.0 {
+        current_frequency / max_frequency * 100.0
+    } else {
+        0.0
+    };
+    
+    // Combine frequency utilization and active residency for overall usage
+    let usage = (frequency_utilization * active_residency / 100.0).min(100.0);
+
+    // Create a single GPU instance since macOS only reports one GPU
+    let gpu = GPU {
+        id: 0,
+        power,
+        frequency: current_frequency,
+        usage,
+    };
+
+    (vec![gpu], power, usage)
 }
 
 fn get_memory_info() -> (u64, u64) {
@@ -103,20 +148,32 @@ fn get_memory_info() -> (u64, u64) {
     let used = if let Ok(output) = std::process::Command::new("vm_stat")
         .output() {
         let text = String::from_utf8_lossy(&output.stdout);
-        let mut used = 0;
+        let mut app_memory = 0;
+        let mut wired = 0;
+
+        // Page size is 16384 bytes on Apple Silicon Macs
+        const PAGE_SIZE: u64 = 16384;
 
         for line in text.lines() {
             if line.contains("Pages active:") || 
-               line.contains("Pages inactive:") || 
-               line.contains("Pages wired down:") {
+               line.contains("Pages anonymous:") ||
+               line.contains("Pages occupied by compressor:") {
                 if let Some(value) = line.split(':').nth(1) {
                     if let Ok(pages) = value.trim().replace('.', "").parse::<u64>() {
-                        used += pages * 4096;
+                        app_memory += pages * PAGE_SIZE;
+                    }
+                }
+            } else if line.contains("Pages wired down:") {
+                if let Some(value) = line.split(':').nth(1) {
+                    if let Ok(pages) = value.trim().replace('.', "").parse::<u64>() {
+                        wired += pages * PAGE_SIZE;
                     }
                 }
             }
         }
-        used
+        
+        // Total used memory = App Memory + Wired Memory
+        app_memory + wired
     } else {
         0
     };
@@ -186,18 +243,17 @@ async fn measure_metrics() -> Result<SystemMetrics, String> {
     }
 
     // Get GPU metrics
-    let (gpu_power, gpu_frequency, gpu_usage) = parse_gpu_metrics(&text);
+    let (gpus, total_gpu_power, total_gpu_usage) = parse_gpu_metrics(&text);
 
     let metrics = SystemMetrics {
         timestamp: SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map_err(|e| format!("Failed to get timestamp: {}", e))?
-            .as_secs(),
+            .map_err(|e| format!("Failed to get timestamp: {}", e))?.as_secs(),
         cpu_cores,
         total_cpu_power,
-        gpu_power,
-        gpu_frequency,
-        gpu_usage,
+        total_gpu_power,
+        total_gpu_usage,
+        gpus,
         memory_total,
         memory_used,
         carbon_intensity: 100.0, // TODO: Integrate with real carbon intensity API
